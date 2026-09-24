@@ -1,0 +1,9 @@
+*.o
+*.out
+tests/test_gather
+tests/test_select
+tests/test_bitpacked
+bench/bench_gather
+bench/bench_select
+bench/bench_bitpacked
+bench/bench_bitpacked_mt
