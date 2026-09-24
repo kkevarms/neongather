@@ -42,33 +42,45 @@ x86 side: thin wrapper directly over `_mm256_i32gather_epi32`/AVX-512 gather int
 cleverness needed, just API parity with the ARM side so calling code doesn't care which
 platform it's on.
 
-## Status (2026-09-24)
+## Status (2026-09-24) — correction: single-thread wins were not reliable
 
-Real, working, correctness-verified implementations on actual Apple Silicon (Apple M6) hardware,
-all diffed bit-exact against a scalar reference:
+Correctness is real and solid: every gather strategy below is diffed bit-exact against a scalar
+reference on real Apple Silicon (Apple M6) hardware, across multiple table sizes including a
+real architectural bug caught and fixed (`TBL4` outputs at most 16 lanes per call, period,
+regardless of how many tables a small enough packed size could theoretically fit into 64 bytes —
+found by testing table sizes other than the one bpp9000-specific case, fixed via a
+`tablesPerBlockFor()` helper that caps correctly. `src/gather_bitpacked.h`, `tests/test_generic_tablesize.cpp`).
 
-- **`src/gather.h`** — byte-packed `TBL4` gather (2 tables/64-byte block for bpp9000's 27-byte
-  tables): **1.48x** vs scalar, single-threaded.
-- **`src/gather_bitpacked.h`** — same idea, but 2-bit-packed values (4/byte) so 9 tables fit per
-  block instead of 2, using far more of `TBL4`'s 16-lane budget: **1.88x** vs scalar,
-  single-threaded — the current best single-thread result.
-- **`src/gather_select.h`** — an alternative tried and genuinely rejected: compare-and-blend
-  against every possible index value instead of gathering. **0.88x** — slower than scalar,
-  because its cost is O(possible-values × n), not O(n). Kept as a documented negative result,
-  not deleted.
-- **Multithreaded**: up to **~8.5x** aggregate vs 1 thread on a real 12-core Apple M6 (three real
-  core tiers — 2 "Super" + 4 "Performance" + 6 "Efficiency" — so scaling is real but genuinely
-  non-linear, not a clean multiplier).
+**The single-thread throughput numbers, however, were wrong.** Both `TBL4`-based approaches
+(`src/gather.h` byte-packed, `src/gather_bitpacked.h` bit-packed) were first reported as real
+wins (1.48x, 1.88x) from single-shot benchmark runs. Repeating each benchmark several times
+in a row tells a different, more honest story: scalar settles to a stable ~50ms baseline while
+both `TBL4` variants stay flat around ~55-65ms — i.e. **scalar is not clearly beaten by either
+`TBL4` approach on this hardware, and by the stabilized numbers may be faster.** The first-run
+"wins" were measurement artifacts (likely thermal/frequency-state settling, not yet root-caused),
+not real, reproducible results. Lesson: never trust a single benchmark run, average several.
 
-**Honest current limitation**: the implementations above are tuned to one concrete workload's
-shape (27-entry tables, 2-bit trit values) rather than a fully generic "any table size, any
-value width" API yet. The *techniques* (TBL4 table-packing, bit-packing for narrow value widths)
-are general; the current code isn't parameterized for arbitrary shapes. Real next step before
-this is a drop-in library for other use cases: generalize `packedTableBytes`/value-width instead
-of hardcoding trit-specific (2-bit) packing.
+The one number that held up as a real, substantial win: **multithreading**, up to **~8.5x**
+aggregate throughput at 12 threads vs 1 on this chip's three real core tiers (2 "Super" + 4
+"Performance" + 6 "Efficiency") — though even that was only measured once and should be
+re-verified with repeated runs before being trusted as firmly as the correctness results are.
+
+- **`src/gather_select.h`** — a compare-and-blend alternative, genuinely and clearly rejected:
+  **0.88x**, consistently worse, because its cost is O(possible-values × n) not O(n). This one
+  negative result held up on repeat and is trustworthy.
+
+**Honest current state**: this library's real, solid deliverable so far is *correct* NEON gather
+emulation (including a real caught architectural bug), not yet a *proven faster* one on
+single-thread throughput — that claim needs to be re-earned with a proper repeated-measurement
+benchmark harness before being reported again. The techniques are still real (TBL4 table-packing,
+bit-packing for narrow value widths); whether they're actually faster than well-optimized scalar
+code on this exact hardware is now an open question again, not a settled one.
 
 **Not yet built**: the x86 AVX2/AVX-512 path (x86 has real hardware gather and doesn't need any
-of these tricks — the wrapper would exist only for API parity, not because x86 needs help).
+of these tricks); a proper repeated-run benchmark harness (the real next priority before trusting
+any more throughput claims); the API is also still tuned to one workload's shape (27-entry
+tables, 2-bit values) rather than a fully generic library, though the table-size generalization
+is now tested down to that level.
 
 ## Layout
 

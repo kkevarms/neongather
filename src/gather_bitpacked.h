@@ -52,12 +52,26 @@ inline void gatherScalarBitpacked(const uint8_t* const* packedTables, const uint
 // `packedTableBytes` = ceil(tableSize/4) (7 for bpp9000's 27-trit tables). `tablesPerBlock` =
 // floor(64/packedTableBytes) (9 for bpp9000). `localIndices` are per-lane indices into the
 // ORIGINAL (unpacked) table range [0, tableSize).
+// One TBL4 call outputs exactly 16 lanes -- a HARD architectural ceiling, independent of how
+// many tables the 64-byte packed buffer could theoretically hold. A caller that packs more than
+// 16 tables into one block (real for small packedTableBytes, e.g. 1-4 byte tables) and passes
+// that raw density straight through gets silent wrong answers past lane 15 -- found live by the
+// generic-table-size test (tableSize 1 and 4 both failed this way before this fix). Always run
+// the packing math through this helper instead of computing floor(64/packedTableBytes) directly.
+inline size_t tablesPerBlockFor(size_t packedTableBytes)
+{
+    const size_t fitsInBlock = 64 / packedTableBytes;
+    return (fitsInBlock < 16) ? fitsInBlock : 16;
+}
+
 inline void gatherPackedBitsTBL4(const uint8_t* packedBlocks, size_t packedTableBytes, size_t tablesPerBlock,
                                   const uint8_t* localIndices, uint8_t* out, size_t n)
 {
     const size_t blockBytes = 64;
 
     // Per-lane table byte-offset within the block (i*packedTableBytes for lane i), built once.
+    // tablesPerBlock must be <= 16 (see tablesPerBlockFor) -- a caller passing a larger value here
+    // is a bug at the call site, not something this function can safely correct for.
     uint8_t offsetBuf[16];
     for (size_t i = 0; i < 16; ++i)
     {
